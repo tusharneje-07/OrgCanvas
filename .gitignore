@@ -8,3 +8,6 @@ data/*.xlsx
 
 org_data.xlsx
 organization_chart_details.xlsx
+
+.~lock.*
+~$*
