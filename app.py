@@ -520,7 +520,12 @@ def export_chart():
     Request JSON:
     {
         "format": "png" or "pdf",
-        "image_data": "base64 encoded image data"
+        "image_data": "base64 encoded image data",
+        "pdf_options": {  // Optional, for PDF only
+            "pageSize": "auto" | "a4" | "a3" | "a2" | "a1" | "a0" | "letter" | "legal" | "tabloid",
+            "orientation": "landscape" | "portrait",
+            "margin": 10  // in mm
+        }
     }
     
     Response: File download
@@ -536,6 +541,7 @@ def export_chart():
         
         export_format = data.get('format', 'png').lower()
         image_data = data.get('image_data', '')
+        pdf_options = data.get('pdf_options', {})
         
         if not image_data:
             return jsonify({
@@ -554,45 +560,86 @@ def export_chart():
         
         if export_format == 'pdf':
             # Convert to PDF using reportlab
-            from reportlab.lib.pagesizes import A4, landscape
+            from reportlab.lib.pagesizes import A4, A3, A2, A1, A0, LETTER, LEGAL, TABLOID, landscape, portrait
             from reportlab.pdfgen import canvas
             from reportlab.lib.utils import ImageReader
+            from reportlab.lib.units import mm
             from PIL import Image
             
             # Load image
             img = Image.open(io.BytesIO(image_bytes))
             img_width, img_height = img.size
             
-            # Create PDF
+            # Get PDF options
+            page_size_name = pdf_options.get('pageSize', 'auto')
+            orientation = pdf_options.get('orientation', 'landscape')
+            margin_mm = pdf_options.get('margin', 10)
+            margin = margin_mm * mm
+            
+            # Page size mapping
+            PAGE_SIZES = {
+                'a4': A4,
+                'a3': A3,
+                'a2': A2,
+                'a1': A1,
+                'a0': A0,
+                'letter': LETTER,
+                'legal': LEGAL,
+                'tabloid': TABLOID
+            }
+            
+            # Create PDF buffer
             pdf_buffer = io.BytesIO()
             
-            # Use landscape if image is wider than tall
-            if img_width > img_height:
-                page_size = landscape(A4)
+            if page_size_name == 'auto':
+                # Auto-fit: Create page size based on image dimensions with margin
+                # Convert pixels to points (72 points per inch, assume 150 DPI for the image)
+                dpi = 150  # Assumed DPI of the high-quality export
+                points_per_pixel = 72 / dpi
+                
+                page_width = (img_width * points_per_pixel) + (2 * margin)
+                page_height = (img_height * points_per_pixel) + (2 * margin)
+                page_size = (page_width, page_height)
+                
+                c = canvas.Canvas(pdf_buffer, pagesize=page_size)
+                
+                # Draw image at full size with margin
+                scaled_width = img_width * points_per_pixel
+                scaled_height = img_height * points_per_pixel
+                x = margin
+                y = margin
+                
             else:
-                page_size = A4
+                # Use specified page size
+                base_page_size = PAGE_SIZES.get(page_size_name, A4)
+                
+                # Apply orientation
+                if orientation == 'landscape':
+                    page_size = landscape(base_page_size)
+                else:
+                    page_size = portrait(base_page_size)
+                
+                c = canvas.Canvas(pdf_buffer, pagesize=page_size)
+                page_width, page_height = page_size
+                
+                # Calculate scaling to fit page with margins
+                available_width = page_width - 2 * margin
+                available_height = page_height - 2 * margin
+                
+                scale_x = available_width / img_width
+                scale_y = available_height / img_height
+                scale = min(scale_x, scale_y)
+                
+                # Calculate centered position
+                scaled_width = img_width * scale
+                scaled_height = img_height * scale
+                x = (page_width - scaled_width) / 2
+                y = (page_height - scaled_height) / 2
             
-            c = canvas.Canvas(pdf_buffer, pagesize=page_size)
-            page_width, page_height = page_size
-            
-            # Calculate scaling to fit page with margins
-            margin = 40
-            available_width = page_width - 2 * margin
-            available_height = page_height - 2 * margin
-            
-            scale_x = available_width / img_width
-            scale_y = available_height / img_height
-            scale = min(scale_x, scale_y)
-            
-            # Calculate centered position
-            scaled_width = img_width * scale
-            scaled_height = img_height * scale
-            x = (page_width - scaled_width) / 2
-            y = (page_height - scaled_height) / 2
-            
-            # Draw image
+            # Draw image with high quality settings
             img_reader = ImageReader(img)
-            c.drawImage(img_reader, x, y, width=scaled_width, height=scaled_height)
+            c.drawImage(img_reader, x, y, width=scaled_width, height=scaled_height, 
+                       preserveAspectRatio=True, mask='auto')
             
             c.save()
             pdf_buffer.seek(0)

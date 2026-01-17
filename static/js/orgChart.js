@@ -1124,12 +1124,30 @@
         },
         
         /**
-         * Get chart dimensions info for export
+         * Get chart dimensions and info for export
          */
         getChartInfo() {
+            // Calculate max depth
+            let maxDepth = 0;
+            const calculateDepth = (nodeId, depth) => {
+                maxDepth = Math.max(maxDepth, depth);
+                state.flatNodes.forEach(node => {
+                    if (node.manager_id === nodeId) {
+                        calculateDepth(node.id, depth + 1);
+                    }
+                });
+            };
+            state.flatNodes.forEach(node => {
+                if (!node.manager_id) {
+                    calculateDepth(node.id, 1);
+                }
+            });
+            
             return {
                 width: state.chartWidth,
-                height: state.chartHeight
+                height: state.chartHeight,
+                nodeCount: state.flatNodes.size,
+                maxDepth: maxDepth
             };
         },
         
@@ -1218,6 +1236,246 @@
                     resolve(finalCanvas.toDataURL('image/png'));
                 } catch (err) {
                     console.error('Export error:', err);
+                    reject(err);
+                }
+            });
+        },
+        
+        /**
+         * Export chart as SVG string with embedded high-quality PNG
+         * This approach ensures consistent rendering across all applications
+         * @param {string} bgColor - Background color ('transparent', '#ffffff', etc.)
+         * @param {number} padding - Extra padding around chart in pixels
+         */
+        async exportAsSVG(bgColor = '#ffffff', padding = 50) {
+            return new Promise(async (resolve, reject) => {
+                try {
+                    // Generate high-quality PNG (3x scale for crisp rendering)
+                    const pngDataUrl = await this.exportAsImage(3, bgColor, padding);
+                    
+                    // Get dimensions from the image
+                    const img = new Image();
+                    img.src = pngDataUrl;
+                    await new Promise(r => img.onload = r);
+                    
+                    const width = img.width / 3; // Base size (not scaled)
+                    const height = img.height / 3;
+                    
+                    // Create SVG with embedded image
+                    const svgContent = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" 
+     width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+    <title>Organization Chart</title>
+    <desc>Exported from Organization Chart Maker</desc>
+    ${bgColor !== 'transparent' ? `<rect width="100%" height="100%" fill="${bgColor}"/>` : ''}
+    <image x="0" y="0" width="${width}" height="${height}" 
+           xlink:href="${pngDataUrl}" 
+           preserveAspectRatio="xMidYMid meet"/>
+</svg>`;
+                    
+                    resolve(svgContent);
+                } catch (err) {
+                    console.error('SVG Export error:', err);
+                    reject(err);
+                }
+            });
+        },
+        
+        /**
+         * Export complete organization data as JSON
+         * @returns {Object} Complete organization data with metadata
+         */
+        async exportAsJSON() {
+            const now = new Date();
+            
+            // Build hierarchy recursively
+            const buildHierarchy = (node) => {
+                const children = [];
+                state.flatNodes.forEach(child => {
+                    if (child.manager_id === node.id) {
+                        children.push(buildHierarchy(child));
+                    }
+                });
+                
+                return {
+                    id: node.id,
+                    name: node.name,
+                    title: node.title,
+                    department: node.department,
+                    color: node.color || '#1a73e8',
+                    avatar_url: node.avatar_url || null,
+                    whatsapp: node.whatsapp || null,
+                    manager_id: node.manager_id || null,
+                    children: children.length > 0 ? children : undefined
+                };
+            };
+            
+            // Find root nodes and build hierarchy
+            const rootNodes = [];
+            const allNodes = [];
+            
+            state.flatNodes.forEach(node => {
+                // Add to flat list
+                allNodes.push({
+                    id: node.id,
+                    name: node.name,
+                    title: node.title,
+                    department: node.department,
+                    color: node.color || '#1a73e8',
+                    avatar_url: node.avatar_url || null,
+                    whatsapp: node.whatsapp || null,
+                    manager_id: node.manager_id || null
+                });
+                
+                // Check if root
+                if (!node.manager_id) {
+                    rootNodes.push(buildHierarchy(node));
+                }
+            });
+            
+            // Get unique departments
+            const departments = [...new Set(allNodes.map(n => n.department).filter(Boolean))];
+            
+            // Calculate statistics
+            const maxDepth = this.getChartInfo().maxDepth;
+            
+            return {
+                exportInfo: {
+                    version: '1.0',
+                    exportDate: now.toISOString(),
+                    exportDateLocal: now.toLocaleString(),
+                    generator: 'Organization Chart Maker'
+                },
+                statistics: {
+                    totalEmployees: allNodes.length,
+                    departments: departments.length,
+                    maxDepth: maxDepth
+                },
+                departments: departments,
+                nodes: allNodes,
+                hierarchy: rootNodes.length === 1 ? rootNodes[0] : rootNodes
+            };
+        },
+        
+        /**
+         * Export chart as SVG string (legacy - uses foreignObject)
+         * @deprecated Use exportAsSVG instead
+         */
+        async exportAsSVGLegacy(bgColor = '#ffffff', padding = 50) {
+            return new Promise(async (resolve, reject) => {
+                try {
+                    const orgChart = elements.orgChart;
+                    
+                    // Store original styles
+                    const originalTransform = orgChart.style.transform;
+                    
+                    // Reset transform for accurate capture
+                    orgChart.style.transform = 'none';
+                    
+                    // Temporarily hide expand/collapse buttons for cleaner export
+                    const expandBtns = orgChart.querySelectorAll('.node-expand-btn');
+                    expandBtns.forEach(btn => btn.style.display = 'none');
+                    
+                    // Wait for any transitions to complete
+                    await new Promise(r => setTimeout(r, 100));
+                    
+                    // Get the chart dimensions
+                    const chartRect = orgChart.getBoundingClientRect();
+                    const width = state.chartWidth + (padding * 2);
+                    const height = state.chartHeight + (padding * 2);
+                    
+                    // Clone the org chart for manipulation
+                    const clonedChart = orgChart.cloneNode(true);
+                    
+                    // Remove expand buttons from clone
+                    clonedChart.querySelectorAll('.node-expand-btn').forEach(btn => btn.remove());
+                    
+                    // Get all computed styles and inline them
+                    const inlineStyles = (element, clone) => {
+                        const computed = window.getComputedStyle(element);
+                        const importantStyles = [
+                            'font-family', 'font-size', 'font-weight', 'color', 'background-color',
+                            'background', 'border', 'border-radius', 'padding', 'margin',
+                            'display', 'flex-direction', 'align-items', 'justify-content', 'gap',
+                            'position', 'top', 'left', 'right', 'bottom', 'width', 'height',
+                            'min-width', 'min-height', 'max-width', 'max-height',
+                            'box-shadow', 'text-align', 'line-height', 'letter-spacing',
+                            'overflow', 'white-space', 'text-overflow', 'word-wrap',
+                            'transform', 'opacity', 'z-index', 'fill', 'stroke', 'stroke-width'
+                        ];
+                        
+                        importantStyles.forEach(prop => {
+                            const value = computed.getPropertyValue(prop);
+                            if (value) {
+                                clone.style.setProperty(prop, value);
+                            }
+                        });
+                        
+                        // Handle CSS variables
+                        clone.style.setProperty('--border-line-color', state.borderLineColor);
+                        
+                        // Recursively inline children
+                        const children = element.children;
+                        const cloneChildren = clone.children;
+                        for (let i = 0; i < children.length; i++) {
+                            if (children[i] && cloneChildren[i]) {
+                                inlineStyles(children[i], cloneChildren[i]);
+                            }
+                        }
+                    };
+                    
+                    inlineStyles(orgChart, clonedChart);
+                    
+                    // Create SVG wrapper
+                    const svgNS = 'http://www.w3.org/2000/svg';
+                    const svg = document.createElementNS(svgNS, 'svg');
+                    svg.setAttribute('xmlns', svgNS);
+                    svg.setAttribute('width', width);
+                    svg.setAttribute('height', height);
+                    svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+                    
+                    // Add background rect if not transparent
+                    if (bgColor !== 'transparent') {
+                        const bgRect = document.createElementNS(svgNS, 'rect');
+                        bgRect.setAttribute('width', '100%');
+                        bgRect.setAttribute('height', '100%');
+                        bgRect.setAttribute('fill', bgColor);
+                        svg.appendChild(bgRect);
+                    }
+                    
+                    // Create foreignObject to embed HTML
+                    const foreignObject = document.createElementNS(svgNS, 'foreignObject');
+                    foreignObject.setAttribute('x', padding);
+                    foreignObject.setAttribute('y', padding);
+                    foreignObject.setAttribute('width', state.chartWidth);
+                    foreignObject.setAttribute('height', state.chartHeight);
+                    
+                    // Set up the cloned chart
+                    clonedChart.style.transform = 'none';
+                    clonedChart.style.position = 'relative';
+                    clonedChart.style.width = state.chartWidth + 'px';
+                    clonedChart.style.height = state.chartHeight + 'px';
+                    clonedChart.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml');
+                    
+                    foreignObject.appendChild(clonedChart);
+                    svg.appendChild(foreignObject);
+                    
+                    // Serialize to string
+                    const serializer = new XMLSerializer();
+                    let svgString = serializer.serializeToString(svg);
+                    
+                    // Clean up and add XML declaration
+                    svgString = '<?xml version="1.0" encoding="UTF-8"?>\n' + svgString;
+                    
+                    // Restore original styles
+                    orgChart.style.transform = originalTransform;
+                    
+                    // Restore expand buttons
+                    expandBtns.forEach(btn => btn.style.display = '');
+                    
+                    resolve(svgString);
+                } catch (err) {
+                    console.error('SVG Export error:', err);
                     reject(err);
                 }
             });
