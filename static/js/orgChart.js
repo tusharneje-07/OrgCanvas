@@ -1242,35 +1242,236 @@
         },
         
         /**
-         * Export chart as SVG string with embedded high-quality PNG
-         * This approach ensures consistent rendering across all applications
+         * Export chart as true vector SVG string
+         * Creates native SVG elements for nodes and connecting lines
          * @param {string} bgColor - Background color ('transparent', '#ffffff', etc.)
          * @param {number} padding - Extra padding around chart in pixels
          */
         async exportAsSVG(bgColor = '#ffffff', padding = 50) {
             return new Promise(async (resolve, reject) => {
                 try {
-                    // Generate high-quality PNG (3x scale for crisp rendering)
-                    const pngDataUrl = await this.exportAsImage(3, bgColor, padding);
+                    const width = state.chartWidth + (padding * 2);
+                    const height = state.chartHeight + (padding * 2);
+                    const isHorizontal = state.layout === 'horizontal';
+                    const borderRadius = state.cardCornerStyle === 'curved' ? 12 : 0;
+                    const innerRadius = state.cardCornerStyle === 'curved' ? 10 : 0;
                     
-                    // Get dimensions from the image
-                    const img = new Image();
-                    img.src = pngDataUrl;
-                    await new Promise(r => img.onload = r);
+                    // Helper to escape HTML entities
+                    const escapeXml = (str) => {
+                        if (!str) return '';
+                        return String(str)
+                            .replace(/&/g, '&amp;')
+                            .replace(/</g, '&lt;')
+                            .replace(/>/g, '&gt;')
+                            .replace(/"/g, '&quot;')
+                            .replace(/'/g, '&apos;');
+                    };
                     
-                    const width = img.width / 3; // Base size (not scaled)
-                    const height = img.height / 3;
+                    // Helper to get initials
+                    const getInitialsForSvg = (name) => {
+                        if (!name) return '?';
+                        const words = name.trim().split(/\s+/);
+                        if (words.length === 1) {
+                            return words[0].substring(0, 2).toUpperCase();
+                        }
+                        return (words[0][0] + words[words.length - 1][0]).toUpperCase();
+                    };
                     
-                    // Create SVG with embedded image
+                    // Build connecting lines
+                    let linesContent = '';
+                    state.nodePositions.forEach((pos, nodeId) => {
+                        const node = pos.node;
+                        if (!node.children || node.children.length === 0 || node.expanded === false) return;
+                        
+                        node.children.forEach(child => {
+                            const childPos = state.nodePositions.get(child.id);
+                            if (!childPos) return;
+                            
+                            let d;
+                            const cornerRadius = 12;
+                            
+                            if (isHorizontal) {
+                                const startX = pos.x + CONFIG.nodeWidth / 2;
+                                const startY = pos.y + pos.height / 2;
+                                const endX = childPos.x - CONFIG.nodeWidth / 2;
+                                const endY = childPos.y + childPos.height / 2;
+                                const midX = (startX + endX) / 2;
+                                
+                                if (state.lineCornerStyle === 'curved') {
+                                    d = `M ${startX + padding} ${startY + padding} C ${midX + padding} ${startY + padding}, ${midX + padding} ${endY + padding}, ${endX + padding} ${endY + padding}`;
+                                } else {
+                                    d = `M ${startX + padding} ${startY + padding} L ${midX + padding} ${startY + padding} L ${midX + padding} ${endY + padding} L ${endX + padding} ${endY + padding}`;
+                                }
+                            } else {
+                                const startX = pos.x;
+                                const startY = pos.y + pos.height;
+                                const endX = childPos.x;
+                                const endY = childPos.y;
+                                const midY = startY + (endY - startY) / 2;
+                                
+                                if (state.lineCornerStyle === 'curved') {
+                                    const r = Math.min(cornerRadius, Math.abs(endX - startX) / 2, (endY - startY) / 4);
+                                    
+                                    if (startX === endX) {
+                                        d = `M ${startX + padding} ${startY + padding} L ${endX + padding} ${endY + padding}`;
+                                    } else if (endX > startX) {
+                                        d = `M ${startX + padding} ${startY + padding} L ${startX + padding} ${midY - r + padding} Q ${startX + padding} ${midY + padding} ${startX + r + padding} ${midY + padding} L ${endX - r + padding} ${midY + padding} Q ${endX + padding} ${midY + padding} ${endX + padding} ${midY + r + padding} L ${endX + padding} ${endY + padding}`;
+                                    } else {
+                                        d = `M ${startX + padding} ${startY + padding} L ${startX + padding} ${midY - r + padding} Q ${startX + padding} ${midY + padding} ${startX - r + padding} ${midY + padding} L ${endX + r + padding} ${midY + padding} Q ${endX + padding} ${midY + padding} ${endX + padding} ${midY + r + padding} L ${endX + padding} ${endY + padding}`;
+                                    }
+                                } else {
+                                    d = `M ${startX + padding} ${startY + padding} L ${startX + padding} ${midY + padding} L ${endX + padding} ${midY + padding} L ${endX + padding} ${endY + padding}`;
+                                }
+                            }
+                            
+                            linesContent += `<path d="${d}" fill="none" stroke="${state.borderLineColor}" stroke-width="2"/>\n`;
+                        });
+                    });
+                    
+                    // Helper function to wrap text into multiple lines
+                    const wrapText = (text, maxWidth, fontSize) => {
+                        if (!text) return [];
+                        const words = text.split(' ');
+                        const lines = [];
+                        let currentLine = '';
+                        
+                        // Approximate character width (varies by font, this is an estimate)
+                        const avgCharWidth = fontSize * 0.55;
+                        const maxChars = Math.floor(maxWidth / avgCharWidth);
+                        
+                        words.forEach(word => {
+                            const testLine = currentLine ? currentLine + ' ' + word : word;
+                            if (testLine.length <= maxChars) {
+                                currentLine = testLine;
+                            } else {
+                                if (currentLine) {
+                                    lines.push(currentLine);
+                                }
+                                // If single word is too long, split it
+                                if (word.length > maxChars) {
+                                    while (word.length > maxChars) {
+                                        lines.push(word.substring(0, maxChars - 1) + '-');
+                                        word = word.substring(maxChars - 1);
+                                    }
+                                    currentLine = word;
+                                } else {
+                                    currentLine = word;
+                                }
+                            }
+                        });
+                        if (currentLine) {
+                            lines.push(currentLine);
+                        }
+                        return lines;
+                    };
+                    
+                    // Build node elements
+                    let nodesContent = '';
+                    state.nodePositions.forEach((pos, nodeId) => {
+                        const node = pos.node;
+                        const x = pos.x - CONFIG.nodeWidth / 2 + padding;
+                        const y = pos.y + padding;
+                        const nodeWidth = CONFIG.nodeWidth;
+                        const nodeHeight = pos.height;
+                        const headerHeight = 24;
+                        const avatarSize = 36;
+                        const avatarBg = node.color || '#757575';
+                        const initials = getInitialsForSvg(node.name);
+                        const textPadding = 8; // Padding on each side for text
+                        const textMaxWidth = nodeWidth - (textPadding * 2);
+                        
+                        // Node group
+                        nodesContent += `<g transform="translate(${x}, ${y})">\n`;
+                        
+                        // Drop shadow filter reference
+                        nodesContent += `  <!-- Node: ${escapeXml(node.name)} -->\n`;
+                        
+                        // Card background (white body with border)
+                        nodesContent += `  <rect x="0" y="0" width="${nodeWidth}" height="${nodeHeight}" rx="${borderRadius}" ry="${borderRadius}" fill="white" stroke="${state.borderLineColor}" stroke-width="2"/>\n`;
+                        
+                        // Header background (colored)
+                        if (borderRadius > 0) {
+                            nodesContent += `  <path d="M ${borderRadius} 0 L ${nodeWidth - borderRadius} 0 Q ${nodeWidth} 0 ${nodeWidth} ${borderRadius} L ${nodeWidth} ${headerHeight} L 0 ${headerHeight} L 0 ${borderRadius} Q 0 0 ${borderRadius} 0 Z" fill="${node.color || '#757575'}"/>\n`;
+                        } else {
+                            nodesContent += `  <rect x="0" y="0" width="${nodeWidth}" height="${headerHeight}" fill="${node.color || '#757575'}"/>\n`;
+                        }
+                        
+                        // Avatar circle
+                        const avatarCx = nodeWidth / 2;
+                        const avatarCy = headerHeight;
+                        nodesContent += `  <circle cx="${avatarCx}" cy="${avatarCy}" r="${avatarSize / 2 + 2}" fill="white"/>\n`;
+                        nodesContent += `  <circle cx="${avatarCx}" cy="${avatarCy}" r="${avatarSize / 2}" fill="${avatarBg}"/>\n`;
+                        
+                        // Avatar initials
+                        nodesContent += `  <text x="${avatarCx}" y="${avatarCy + 4}" text-anchor="middle" fill="white" font-family="Inter, -apple-system, BlinkMacSystemFont, sans-serif" font-size="12" font-weight="600">${escapeXml(initials)}</text>\n`;
+                        
+                        // Name text with wrapping
+                        const nameFontSize = 11;
+                        const nameLineHeight = 13;
+                        const nameLines = wrapText(node.name || '', textMaxWidth, nameFontSize);
+                        let nameY = headerHeight + avatarSize / 2 + 16;
+                        
+                        nodesContent += `  <text x="${nodeWidth / 2}" y="${nameY}" text-anchor="middle" fill="#424242" font-family="Inter, -apple-system, BlinkMacSystemFont, sans-serif" font-size="${nameFontSize}" font-weight="600">\n`;
+                        nameLines.forEach((line, i) => {
+                            if (i === 0) {
+                                nodesContent += `    <tspan x="${nodeWidth / 2}" dy="0">${escapeXml(line)}</tspan>\n`;
+                            } else {
+                                nodesContent += `    <tspan x="${nodeWidth / 2}" dy="${nameLineHeight}">${escapeXml(line)}</tspan>\n`;
+                            }
+                        });
+                        nodesContent += `  </text>\n`;
+                        
+                        // Title text with wrapping
+                        const titleFontSize = 10;
+                        const titleLineHeight = 12;
+                        const titleLines = wrapText(node.title || '', textMaxWidth, titleFontSize);
+                        const titleY = nameY + (nameLines.length - 1) * nameLineHeight + 14;
+                        
+                        nodesContent += `  <text x="${nodeWidth / 2}" y="${titleY}" text-anchor="middle" fill="#9e9e9e" font-family="Inter, -apple-system, BlinkMacSystemFont, sans-serif" font-size="${titleFontSize}">\n`;
+                        titleLines.forEach((line, i) => {
+                            if (i === 0) {
+                                nodesContent += `    <tspan x="${nodeWidth / 2}" dy="0">${escapeXml(line)}</tspan>\n`;
+                            } else {
+                                nodesContent += `    <tspan x="${nodeWidth / 2}" dy="${titleLineHeight}">${escapeXml(line)}</tspan>\n`;
+                            }
+                        });
+                        nodesContent += `  </text>\n`;
+                        
+                        // WhatsApp number (if shown)
+                        if (node.whatsapp && state.showWhatsApp) {
+                            const phoneY = titleY + (titleLines.length - 1) * titleLineHeight + 14;
+                            const cleanNumber = node.whatsapp.replace(/[^0-9]/g, '');
+                            const displayNumber = '+' + cleanNumber;
+                            nodesContent += `  <text x="${nodeWidth / 2}" y="${phoneY}" text-anchor="middle" fill="#128C7E" font-family="Inter, -apple-system, BlinkMacSystemFont, sans-serif" font-size="10">${escapeXml(displayNumber)}</text>\n`;
+                        }
+                        
+                        nodesContent += `</g>\n`;
+                    });
+                    
+                    // Create the SVG content
                     const svgContent = `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" 
+<svg xmlns="http://www.w3.org/2000/svg" 
      width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
     <title>Organization Chart</title>
     <desc>Exported from Organization Chart Maker</desc>
+    
+    <defs>
+        <style>
+            text { user-select: none; }
+        </style>
+    </defs>
+    
     ${bgColor !== 'transparent' ? `<rect width="100%" height="100%" fill="${bgColor}"/>` : ''}
-    <image x="0" y="0" width="${width}" height="${height}" 
-           xlink:href="${pngDataUrl}" 
-           preserveAspectRatio="xMidYMid meet"/>
+    
+    <!-- Connecting Lines -->
+    <g id="lines">
+${linesContent}
+    </g>
+    
+    <!-- Nodes -->
+    <g id="nodes">
+${nodesContent}
+    </g>
 </svg>`;
                     
                     resolve(svgContent);
