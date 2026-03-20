@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orgcanvas-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: orgcanvas
+  template:
+    metadata:
+      labels:
+        app: orgcanvas
+    spec:
+      containers:
+        - name: orgcanvas-container
+          image: nejetushar/orgcanvas:latest
+          ports:
+            - containerPort: 5000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orgcanvas-service
+spec:
+  type: NodePort
+  selector:
+    app: orgcanvas
+  ports:
+    - port: 80
+      targetPort: 5000
+      nodePort: 30007
